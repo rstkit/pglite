@@ -1,5 +1,47 @@
 # @electric-sql/pglite
 
+## 0.5.11
+
+### Patch Changes
+
+- 5573bb0: bug fix: check ready before close
+- 2372f39: Update submodule
+- 4321a41: Fix premature ReadyForQuery responses after extended-query errors, preventing PostgreSQL clients from desynchronizing before Sync.
+
+## 0.5.10
+
+### Patch Changes
+
+- 367ee2f: Bug fix: wait for running queries to finish before doing a data dir dump
+- cb06c21: Wait for queries to finish before closing PGlite instance. See #1128
+- 78012ca: Fix a windowed `live.query` (one given `offset` and `limit`) leaking its `live_query_<id>_get_total_count` prepared statement on `unsubscribe`. Only `live_query_<id>_get` was deallocated, so the count statement survived every teardown while its backing view was dropped, accumulating dangling prepared statements for the lifetime of the database.
+
+## 0.5.9
+
+### Patch Changes
+
+- 389b731: upgrade to PostgreSQL 18.6
+- 389b731: Export additional core symbols from the main WASM module required by the plpgsql_check extension
+
+## 0.5.8
+
+### Patch Changes
+
+- c771db3: Do not set process.exitCode at all
+
+## 0.5.7
+
+### Patch Changes
+
+- 2f9cf75: Fix convert_to
+
+## 0.5.6
+
+### Patch Changes
+
+- 69b7d87: Apply the second options argument when calling `PGlite.create(undefined, options)`.
+- 6c14380: fixes for process.exitCode
+
 ## 0.5.5
 
 ### Patch Changes

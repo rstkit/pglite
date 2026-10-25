@@ -355,9 +355,19 @@ export class PGlite
       // Provide a stdin that returns EOF to avoid browser prompt
       stdin: () => null,
       print: (text: string) => {
+        if (options.onStdout) {
+          if (options.onStdout(text)) {
+            return this.#print(text)
+          }
+        }
         this.#print(text)
       },
       printErr: (text: string) => {
+        if (options.onStderr) {
+          if (options.onStderr(text)) {
+            return this.#printErr(text)
+          }
+        }
         this.#printErr(text)
       },
       instantiateWasm: (imports, successCallback) => {
@@ -466,11 +476,6 @@ export class PGlite
             Object.assign(mod.ENV, mod.PGLITE_ENV)
           }
         },
-        (mod: PostgresMod) => {
-          mod.FS.chmod('/home/postgres/.pgpass', 0o0600) // https://www.postgresql.org/docs/current/libpq-pgpass.html
-          mod.FS.chmod(INITDB_EXE_PATH, 0o0555)
-          mod.FS.chmod(POSTGRES_EXE_PATH, 0o0555)
-        },
       ],
     }
 
@@ -525,6 +530,11 @@ export class PGlite
 
     // Load the database engine
     this.mod = await PostgresModFactory(emscriptenOpts)
+
+    // set file flags
+    this.mod.FS.chmod('/home/postgres/.pgpass', 0o0600) // https://www.postgresql.org/docs/current/libpq-pgpass.html
+    this.mod.FS.chmod(INITDB_EXE_PATH, 0o0555)
+    this.mod.FS.chmod(POSTGRES_EXE_PATH, 0o0555)
 
     // Sync the filesystem from any previous store
     await this.fs!.initialSyncFs()
@@ -714,7 +724,7 @@ export class PGlite
         if (length > max_length) {
           length = max_length
         }
-        this.mod!.HEAP8.set(
+        this.mod!.HEAPU8.set(
           (this.#outputData as Uint8Array).subarray(
             this.#readOffset,
             this.#readOffset + length,
@@ -785,8 +795,14 @@ export class PGlite
    * @returns A promise that resolves when the database is closed
    */
   async close() {
+    // make sure the initialization has finished by awaiting ready
+    // do not acquire the mutex, since init might need it
     await this._checkReady()
-    this.#closing = true
+    // wait for pending queries to finish
+    await this.#queryMutex.runExclusive(async () => {
+      await this._checkReady() // a concurrent close() may have run first
+      this.#closing = true
+    })
 
     // Close all extensions
     for (const closeFn of this.#extensionsClose) {
@@ -820,25 +836,18 @@ export class PGlite
     this.#ready = false
     this.#running = false
 
-    const exitCode = pglUtils.pgliteProc.exitCode
     try {
       // exit the runtime. since we're using `noExitRuntime: true` on our module,
       // we need to do this explicitly
-      // this sets process.exitCode to 0
       this.mod!._emscripten_force_exit(0)
-      // clear mod to release memory
-      this.mod = undefined
     } catch (e: any) {
       this.#log(e)
       if (e.status !== 0) {
         this.#log('Error when exiting', e.toString())
       }
     } finally {
-      try {
-        pglUtils.pgliteProc.exitCode = exitCode
-      } catch {
-        // some envs do not allow setting the exitCode, swallow
-      }
+      // clear mod to release memory
+      this.mod = undefined
     }
   }
 
@@ -936,13 +945,14 @@ export class PGlite
         this.#readOffset < message.length ||
         mod._pq_buffer_remaining_data() > 0
       ) {
+        let sp: number
         try {
+          sp = mod.stackSave()
           mod._PostgresMainLoopOnce()
         } catch (e: any) {
+          mod.stackRestore(sp!)
           // we catch here only the "known" exceptions
-          const pgliteExitStatus = this.mod!._pgl_setPGliteExitStatus(-2)
-          // if (e.status === this.POSTGRES_MAIN_LONGJMP) {
-          if (pgliteExitStatus === this.POSTGRES_MAIN_LONGJMP) {
+          if (e.status === this.POSTGRES_MAIN_LONGJMP) {
             // this is the siglongjmp call that a Database exception has occured
             // the original Postgres code makes a longjmp into main, handles the exception,
             // then re-enters the processing loop
@@ -1272,9 +1282,13 @@ export class PGlite
   async dumpDataDir(
     compression?: DumpTarCompressionOptions,
   ): Promise<File | Blob> {
-    await this._checkReady()
-    const dbname = this.dataDir?.split('/').pop() ?? 'pgdata'
-    return this.fs!.dumpTar(dbname, compression)
+    const data = await this.#queryMutex.runExclusive(async () => {
+      await this._checkReady() // a concurrent close() may have run first
+      const dbname = this.dataDir?.split('/').pop() ?? 'pgdata'
+      return this.fs!.dumpTar(dbname, compression)
+    })
+
+    return data
   }
 
   /**
@@ -1328,10 +1342,11 @@ export class PGlite
       opts.pgDataFolder,
       this.mod!.ENV.PGDATABASE,
     ]
-    this.mod!.callMain(singleModeArgs)
-    const pgliteExitStatus = this.mod!._pgl_setPGliteExitStatus(-3)
+    let mainReturnValue = -1
 
-    if (pgliteExitStatus !== this.PGLITE_EXIT_ALIVE) {
+    mainReturnValue = this.mod!.callMain(singleModeArgs)
+
+    if (mainReturnValue !== this.PGLITE_EXIT_ALIVE) {
       throw new Error('PGlite failed to initialize properly')
     }
   }

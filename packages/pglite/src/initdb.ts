@@ -110,6 +110,12 @@ async function execInitdb({
         })
       return {}
     },
+    locateFile: (path, prefix) => {
+      if (path.endsWith('.so')) {
+        return '/pglite/lib/' + path
+      }
+      return prefix + path
+    },
     preRun: [
       (mod: InitdbMod) => {
         mod.ENV.PGDATA = PGDATA
@@ -117,6 +123,9 @@ async function execInitdb({
         mod.ENV.USER = 'postgres'
         mod.ENV.LOGNAME = 'postgres'
         mod.ENV.ICU_DATA = ICU_DATA_PATH
+        // Match the backend (see pglite.ts). Without this, initdb writes the
+        // host's zone to postgresql.conf as a fixed offset such as 'Etc/GMT+5'.
+        mod.ENV.TZ = 'UTC'
       },
       (mod: InitdbMod) => {
         mod.onRuntimeInitialized = () => {
@@ -183,7 +192,7 @@ async function execInitdb({
         }
       },
       (mod: InitdbMod) => {
-        mod.FS.mkdir(PG_ROOT)
+        mod.FS.mkdirTree(PG_ROOT)
         mod.FS.mount(
           mod.PROXYFS,
           {
